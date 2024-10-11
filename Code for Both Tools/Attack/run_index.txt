@@ -1,0 +1,20 @@
+#Reference: Prompt Nine
+#Written by Fatima Hammoud
+
+import http.server   #Imports the module that provides basic web server functionalities
+import socketserver  #Imports the module that simplifies working with sockets
+
+PORT = 80 #Sets the port number to 80 (HTTP default port)
+
+#Specifies that the HTTP request handler will be the built-in SimpleHTTPRequestHandler,
+#which serves files from the current directory and logs incoming requests.
+Handler = http.server.SimpleHTTPRequestHandler
+
+#Creates a TCP server object that listens on the specified port (80) and uses the request h>
+#The empty string "" binds the server to all available IP addresses on the machine (localho>
+with socketserver.TCPServer(("", PORT), Handler) as httpd:
+    print(f"Serving on port {PORT}")  
+    httpd.serve_forever()   #Starts the server and keeps it running indefinitely to handle >
+
+
+

