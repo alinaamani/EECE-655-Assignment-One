@@ -1,0 +1,103 @@
+from scapy.all import *
+import logging
+import dns.resolver  # Import the dnspython library for DNS resolution
+import dns.query
+import dns.dnssec
+import dns.message
+
+# Setting up logging for alerts
+logging.basicConfig(filename="attack_detection.log", level=logging.INFO, format="%(asctime)s - %(message)s")
+
+# Variables for DNS spoofing detection
+dns_spoofing_detected = False
+
+# 1. DNS Spoofing Detection: Using DNSSEC and PTR records
+def detect_dns_spoofing(pkt):
+    """Detect DNS spoofing by validating responses using DNSSEC and PTR records."""
+    global dns_spoofing_detected
+    if pkt.haslayer(DNS) and pkt[DNS].qr == 1:  # DNS response
+        if pkt.haslayer(DNSRR):  # Ensure DNS response record exists
+            dns_response_ip = pkt[DNSRR].rdata
+            query_name = pkt[DNS].qd.qname.decode()
+
+            # DNSSEC Validation
+            if validate_dnssec(query_name):
+                logging.info(f"DNSSEC validation passed for {query_name}")
+            else:
+                logging.warning(f"DNSSEC validation failed for {query_name}. Checking PTR records...")
+
+                # PTR Record Verification
+                ptr_domain = resolve_ptr(dns_response_ip)
+                if ptr_domain and ptr_domain == query_name:
+                    logging.info(f"PTR record validation passed for {query_name}. IP: {dns_response_ip}")
+                else:
+                    logging.warning(f"DNS spoofing detected: {query_name} doesn't match PTR record for IP {dns_response_ip}")
+                    dns_spoofing_detected = True
+        else:
+            logging.warning(f"Packet is missing DNSRR (Resource Record) layer, skipping packet")
+
+# DNSSEC Validation Function
+def validate_dnssec(domain):
+    """Validate DNSSEC signatures for a domain."""
+    try:
+        # Query for DNSKEY records
+        dnskey_query = dns.message.make_query(domain, dns.rdatatype.DNSKEY, want_dnssec=True)
+        response = dns.query.udp(dnskey_query, '8.8.8.8')  # Query Google Public DNS for DNSKEY
+
+        # Check if DNSSEC validation is supported
+        if response.rcode() != 0 or not response.answer:
+            logging.warning(f"DNSSEC not supported for {domain}")
+            return False
+
+        # Extract DNSKEY records
+        dnskey_rrset = response.find_rrset(response.answer, dns.name.from_text(domain), dns.rdataclass.IN, dns.rdatatype.DNSKEY)
+        if not dnskey_rrset:
+            logging.error(f"DNSKEY records not found for {domain}")
+            return False
+
+        # Validate the signatures
+        for rr in response.answer:
+            if rr.rdtype == dns.rdatatype.RRSIG:
+                dns.dnssec.validate(rr, dnskey_rrset, {dns.name.from_text(domain): dnskey_rrset})
+        return True
+    except Exception as e:
+        logging.error(f"DNSSEC validation error for {domain}: {e}")
+        return False
+
+# PTR Record Resolution Function
+def resolve_ptr(ip):
+    """Perform a PTR (reverse DNS) lookup to get the domain associated with an IP address."""
+    try:
+        reversed_ip = '.'.join(reversed(ip.split('.'))) + ".in-addr.arpa"
+        result = dns.resolver.resolve(reversed_ip, 'PTR')
+        return str(result[0]).rstrip('.')  # Return the first result without trailing dot
+    except Exception as e:
+        logging.error(f"PTR lookup error for IP {ip}: {e}")
+        return None
+
+# 5. ARP Spoofing Detection
+def detect_arp_spoofing(pkt):
+    """Detect ARP spoofing by checking for inconsistent MAC-IP associations."""
+    if pkt.haslayer(ARP) and pkt[ARP].op == 2:  # ARP reply (is-at)
+        real_mac = getmacbyip(pkt[ARP].psrc)  # Get the actual MAC for the IP
+        response_mac = pkt[ARP].hwsrc  # MAC address from the ARP response
+
+        if real_mac and real_mac != response_mac:
+            # If the real MAC and the MAC in the ARP reply don't match, raise an alert
+            logging.warning(f"ARP spoofing detected: {pkt[ARP].psrc} is claiming to be {response_mac}, but real MAC is {real_mac}")
+        else:
+            logging.info(f"ARP reply from {pkt[ARP].psrc} is consistent with {response_mac}")
+
+# Packet Monitor Function
+def packet_monitor(pkt):
+    """Monitor packets and call detection functions for each type of attack."""
+    if IP in pkt:
+        if DNS in pkt:
+            detect_dns_spoofing(pkt)
+    if ARP in pkt:
+        detect_arp_spoofing(pkt)  # Detect ARP spoofing
+
+if __name__ == "__main__":
+    # Start sniffing packets and apply detection using L3 socket
+    print("Starting packet sniffing for attack detection using L3 socket...")
+    sniff(prn=packet_monitor, store=0, filter="ip", iface="Ethernet", L3socket=conf.L3socket)
