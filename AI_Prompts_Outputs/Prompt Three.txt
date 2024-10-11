@@ -1,0 +1,97 @@
+Prompt: "How do I track the number of HTTP requests to detect a possible flood attack in Python using scapy?"
+
+Answer:
+To track the number of HTTP requests and detect a possible **HTTP flood attack** in Python using `Scapy`, you can monitor network traffic for an abnormally high number of HTTP requests coming from one or more IP addresses in a short time. This could indicate an HTTP flood attack, which is a type of Denial of Service (DoS) attack where a large number of HTTP requests overwhelm a server.
+
+### Approach:
+1. **Sniff Network Traffic**: Use `Scapy` to sniff HTTP packets on the network.
+2. **Track HTTP Requests**: Extract HTTP request information from captured packets.
+3. **Rate-Limit Checking**: Maintain a count of requests per IP and detect if the number of requests exceeds a threshold within a given time window.
+
+### Key Steps:
+- Capture packets using `Scapy`.
+- Filter HTTP requests (typically using TCP packets with destination port 80 or 443).
+- Track the number of requests from each source IP.
+- Set a threshold to detect potential flooding.
+
+### Code Example: Tracking HTTP Requests
+
+#### Install Dependencies
+Ensure you have `Scapy` installed:
+```bash
+pip install scapy
+```
+
+#### Python Code to Track HTTP Requests:
+
+```python
+from scapy.all import sniff, IP, TCP
+from collections import defaultdict
+import time
+
+# Dictionary to track the number of HTTP requests per IP
+request_count = defaultdict(int)
+# Dictionary to track the last time an IP was seen
+last_seen = defaultdict(float)
+
+# Time window (in seconds) and request threshold for detecting a flood
+TIME_WINDOW = 60  # 1 minute window
+REQUEST_THRESHOLD = 100  # 100 requests per minute from a single IP
+
+# Function to handle sniffed packets
+def packet_handler(packet):
+    # Check if it's an IP packet and contains a TCP layer
+    if IP in packet and TCP in packet:
+        # Check if the destination port is 80 (HTTP) or 443 (HTTPS)
+        if packet[TCP].dport == 80 or packet[TCP].dport == 443:
+            src_ip = packet[IP].src
+            current_time = time.time()
+            
+            # Reset the count if the time window has passed
+            if current_time - last_seen[src_ip] > TIME_WINDOW:
+                request_count[src_ip] = 0
+            
+            # Update the last seen time
+            last_seen[src_ip] = current_time
+            
+            # Increment the count of HTTP requests for this IP
+            request_count[src_ip] += 1
+            
+            # Check if the IP has exceeded the request threshold
+            if request_count[src_ip] > REQUEST_THRESHOLD:
+                print(f"[ALERT] Potential HTTP flood attack detected from {src_ip}! {request_count[src_ip]} requests in the last {TIME_WINDOW} seconds.")
+            else:
+                print(f"[INFO] {src_ip} made {request_count[src_ip]} requests.")
+                
+
+# Start sniffing on the specified network interface (e.g., "eth0")
+sniff(iface="eth0", filter="tcp", prn=packet_handler, store=0)
+```
+
+### **Explanation**:
+1. **Packet Sniffing**:
+   - `sniff(iface="eth0", filter="tcp", prn=packet_handler, store=0)` captures TCP packets on the `eth0` interface.
+   - It filters only TCP packets (`filter="tcp"`) because HTTP runs on TCP (port 80 for HTTP, port 443 for HTTPS).
+
+2. **Tracking HTTP Requests**:
+   - For each captured packet, the script checks if the destination port is `80` or `443`, meaning it’s a possible HTTP request.
+   - The source IP (`src_ip`) is extracted from the `IP` layer, and the number of requests from this IP is tracked in `request_count`.
+
+3. **Rate-Limiting**:
+   - The code uses a **time window** (set to 1 minute) and a **request threshold** (set to 100 requests in this example). If a single IP makes more than `100` requests in `60` seconds, the system raises an alert, which could indicate an HTTP flood attack.
+
+4. **Handling Time Windows**:
+   - `last_seen[src_ip]` stores the last time an IP was active, and if the current time exceeds the time window (60 seconds), the count is reset for that IP.
+
+### **Customizing the Code**:
+- **Change Interface**: Modify the `iface="eth0"` to use the correct network interface, such as `Ethernet` or `wlan0`.
+- **Adjust Thresholds**: Customize `TIME_WINDOW` and `REQUEST_THRESHOLD` to suit your detection criteria for flood attacks.
+- **Logging and Alerts**: You can extend the alert mechanism to log potential attacks, send emails, or trigger other notifications.
+
+### **Flood Detection Example**:
+- If an attacker sends more than 100 HTTP requests from a single IP within 60 seconds, the system will print an alert:
+  ```
+  [ALERT] Potential HTTP flood attack detected from 192.168.1.100! 101 requests in the last 60 seconds.
+  ```
+
+This approach helps monitor and detect abnormal HTTP traffic that may indicate a flood attack.

@@ -1,0 +1,60 @@
+Prompt: "How can I use scapy to sniff network packets and detect different protocols like TCP, UDP, and ICMP? Also provide some sample code examples"
+
+Answer: 
+
+To use `Scapy` for sniffing network packets and detecting different protocols like TCP, UDP, and ICMP, you can use the `sniff()` function to capture packets and then analyze them by checking the protocol types in the packets. `Scapy` allows you to dissect the packets layer by layer and filter by protocol.
+
+### Steps to Sniff Packets and Detect Protocols:
+1. **Install Scapy**: First, make sure `scapy` is installed. You can install it using:
+   ```bash
+   pip install scapy
+   ```
+
+2. **Sniffing Packets**: Use `sniff()` to capture packets. You can apply a callback function to process each packet as it is captured.
+
+3. **Protocol Detection**: Check the layers of each packet. For instance, `IP` layer will contain the source and destination IPs, and you can use the `.proto` field to identify the transport layer protocol (TCP, UDP, ICMP, etc.).
+
+### Code Example to Sniff and Detect TCP, UDP, and ICMP Packets:
+
+```python
+from scapy.all import sniff, IP, TCP, UDP, ICMP
+
+# Function to handle each sniffed packet
+def packet_handler(packet):
+    if IP in packet:
+        ip_src = packet[IP].src
+        ip_dst = packet[IP].dst
+        
+        # Check if the packet has a TCP layer
+        if TCP in packet:
+            print(f"[TCP] {ip_src} -> {ip_dst}")
+        
+        # Check if the packet has a UDP layer
+        elif UDP in packet:
+            print(f"[UDP] {ip_src} -> {ip_dst}")
+        
+        # Check if the packet has an ICMP layer
+        elif ICMP in packet:
+            print(f"[ICMP] {ip_src} -> {ip_dst}")
+
+# Start sniffing on a specific interface (e.g., "eth0")
+# You can also set count=0 for unlimited sniffing and set prn to our handler function
+sniff(filter="ip", prn=packet_handler, iface="eth0", count=10)
+```
+
+### Explanation:
+- **`sniff(filter="ip", prn=packet_handler, iface="eth0", count=10)`**: This starts sniffing packets on the `"eth0"` interface, processes them with the `packet_handler` function, and limits the capture to 10 packets. You can change `"eth0"` to your network interface, such as `Ethernet`.
+- **`IP`**: Checks if the packet contains an IP layer (to ensure it's an IPv4 packet).
+- **`TCP`, `UDP`, `ICMP`**: Check for the presence of specific protocols.
+
+### Customizing Sniffing:
+- **Filtering**: You can filter packets more specifically. For example, to capture only TCP packets:
+  ```python
+  sniff(filter="tcp", prn=packet_handler, iface="eth0", count=10)
+  ```
+- **Infinite Sniffing**: Set `count=0` to sniff indefinitely:
+  ```python
+  sniff(filter="ip", prn=packet_handler, iface="eth0", count=0)
+  ```
+
+This basic setup allows you to detect and print out details about TCP, UDP, and ICMP traffic. Let me know if you need help with further customization!
